@@ -1,0 +1,1 @@
+BOT_TOKEN = "7699387413:AAErp-pxuVwnnbKK-ramP5kH8sNu27JWymk"
