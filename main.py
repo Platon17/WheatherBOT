@@ -1,4 +1,5 @@
-# bot.py
+# main.py
+import asyncio
 import logging
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -100,3 +101,65 @@ async def settings_button(message: Message):
         [KeyboardButton(text="🔙 Назад")],
     ], resize_keyboard=True)
     await message.reply("Что ты хочешь изменить?", reply_markup=keyboard)
+
+# Обработчик кнопки "Сменить город"
+@dp.message(lambda message: message.text == "🏙️ Сменить город")
+async def change_city(message: Message):
+    await message.reply("Напиши название нового города:")
+
+# Обработчик кнопки "Изменить шкалу температуры"
+@dp.message(lambda message: message.text == "🌡️ Изменить шкалу температуры")
+async def change_units(message: Message):
+    keyboard = ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text="🌡️ Цельсий (°C)")],
+        [KeyboardButton(text="🌡️ Фаренгейт (°F)")],
+        [KeyboardButton(text="🌡️ Кельвин (K)")],
+        [KeyboardButton(text="🔙 Назад")],
+    ], resize_keyboard=True)
+    await message.reply("Выбери шкалу температуры:", reply_markup=keyboard)
+
+# Обработчик выбора шкалы температуры
+@dp.message(lambda message: message.text in ["🌡️ Цельсий (°C)", "🌡️ Фаренгейт (°F)", "🌡️ Кельвин (K)"])
+async def set_units(message: Message):
+    user_id = message.from_user.id
+    if message.text == "🌡️ Цельсий (°C)":
+        units = "metric"
+    elif message.text == "🌡️ Фаренгейт (°F)":
+        units = "imperial"
+    else:  # Кельвин (K)
+        units = "standard"
+
+    user_data[user_id] = user_data.get(user_id, {})
+    user_data[user_id]["units"] = units
+    await message.reply(f"Шкала температуры изменена на {message.text}.")
+
+# Обработчик кнопки "Назад"
+@dp.message(lambda message: message.text == "🔙 Назад")
+async def back_button(message: Message):
+    keyboard = ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text="🌤️ Погода сейчас")],
+        [KeyboardButton(text="📅 Погода на завтра"), KeyboardButton(text="📆 Погода на послезавтра")],
+        [KeyboardButton(text="📊 Анализ тенденции")],
+        [KeyboardButton(text="⚙️ Настройки")],
+    ], resize_keyboard=True)
+    await message.reply("Возвращаемся в главное меню.", reply_markup=keyboard)
+
+# Обработчик текстовых сообщений (сохранение города)
+@dp.message()
+async def handle_city(message: Message):
+    user_id = message.from_user.id
+    city = message.text.strip()
+    user_data[user_id] = user_data.get(user_id, {})
+    user_data[user_id]["city"] = city
+    await message.reply(f"Запомнил! Твой город — {city.title()}. Теперь нажимай на кнопку '🌤️ Погода сейчас', чтобы узнать прогноз.")
+
+# Основная функция
+async def main():
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await bot.close()
+
+# Запуск бота
+if __name__ == "main":
+    asyncio.run(main())
