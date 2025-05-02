@@ -1,11 +1,14 @@
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 import logging
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 import aiohttp
 import asyncio
 from datetime import datetime, timedelta
 import config
+from typing import Dict, Any, List
+import re
 
 # Настройки
 API_TOKEN = config.TOKEN
@@ -19,7 +22,8 @@ UNITS = {
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
-user_data = {}
+user_data: Dict[int, Dict[str, Any]] = {}
+subscriptions: Dict[int, Dict[str, Any]] = {}  # Для хранения подписок на рассылку
 
 
 # Клавиатуры
@@ -37,16 +41,46 @@ def settings_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🌍 Сменить город"), KeyboardButton(text="🌡️ Шкала температуры")],
+            [KeyboardButton(text="⏰ Рассылка погоды"), KeyboardButton(text="🔙 Назад")]
+        ],
+        resize_keyboard=True
+    )
+
+def time_selection_menu() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="07:00"), KeyboardButton(text="08:00"), KeyboardButton(text="09:00")],
+            [KeyboardButton(text="10:00"), KeyboardButton(text="11:00"), KeyboardButton(text="12:00")],
+            [KeyboardButton(text="⏱ Указать точное время"), KeyboardButton(text="🔙 Назад")]
+        ],
+        resize_keyboard=True
+    )
+
+def units_menu() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="°C Метрическая"), KeyboardButton(text="°F Имперская")],
             [KeyboardButton(text="🔙 Назад")]
         ],
         resize_keyboard=True
     )
 
 
-def units_menu() -> ReplyKeyboardMarkup:
+def subscription_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="°C Метрическая"), KeyboardButton(text="°F Имперская")],
+            [KeyboardButton(text="✅ Включить рассылку"), KeyboardButton(text="❌ Отключить рассылку")],
+            [KeyboardButton(text="🕘 Изменить время"), KeyboardButton(text="🔙 Назад")]
+        ],
+        resize_keyboard=True
+    )
+
+
+def time_menu() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="07:00"), KeyboardButton(text="08:00"), KeyboardButton(text="09:00")],
+            [KeyboardButton(text="10:00"), KeyboardButton(text="11:00"), KeyboardButton(text="12:00")],
             [KeyboardButton(text="🔙 Назад")]
         ],
         resize_keyboard=True
@@ -72,6 +106,7 @@ def generate_recommendations(temp: float, weather_desc: str) -> str:
     return " ".join(recommendations) if recommendations else "👍 Идеальная погода!"
 
 
+
 # Получение данных о погоде
 async def get_forecast_data(city: str, units: str, days: int = None):
     url = "http://api.openweathermap.org/data/2.5/forecast"
@@ -86,6 +121,21 @@ async def get_forecast_data(city: str, units: str, days: int = None):
             if resp.status == 200:
                 data = await resp.json()
                 return data["list"]
+            return None
+
+
+# Получение текущей погоды
+async def get_current_weather(city: str, units: str) -> Dict[str, Any]:
+    async with aiohttp.ClientSession() as session:
+        params = {
+            "q": city,
+            "appid": OPENWEATHER_API_KEY,
+            "units": units,
+            "lang": "ru"
+        }
+        async with session.get("http://api.openweathermap.org/data/2.5/weather", params=params) as resp:
+            if resp.status == 200:
+                return await resp.json()
             return None
 
 
@@ -145,6 +195,94 @@ def format_tomorrow_forecast(forecast_data: list, city: str, units: str) -> str:
     )
 
 
+# Форматирование утреннего прогноза для рассылки
+async def format_morning_forecast(user_id: int) -> str:
+    if user_id not in user_data or "city" not in user_data[user_id]:
+        return None
+
+    city = user_data[user_id]["city"]
+    units = user_data[user_id].get("units", "metric")
+
+    # Получаем текущую погоду
+    current_weather = await get_current_weather(city, units)
+    if not current_weather:
+        return None
+
+    temp = current_weather["main"]["temp"]
+    feels_like = current_weather["main"]["feels_like"]
+    weather_desc = current_weather["weather"][0]["description"].capitalize()
+    wind_speed = current_weather["wind"]["speed"]
+    humidity = current_weather["main"]["humidity"]
+
+    # Получаем прогноз на день
+    forecast_data = await get_forecast_data(city, units)
+    if not forecast_data:
+        return None
+
+    now = datetime.now()
+    today = now.date()
+
+    # Фильтруем прогноз на оставшийся день (текущее время и позже)
+    today_data = [
+        f for f in forecast_data
+        if datetime.fromtimestamp(f["dt"]).date() == today and
+           datetime.fromtimestamp(f["dt"]) >= now
+    ]
+
+    if not today_data:
+        return None
+
+    # Формируем основное сообщение
+    message_parts = [
+        f"🌅 Доброе утро! Вот погода в {city.title()} на сегодня {now.strftime('%d.%m.%Y')}:\n",
+        f"🌡️ Сейчас: {temp:.1f}{UNITS[units]['temp']} (ощущается {feels_like:.1f}{UNITS[units]['temp']})",
+        f"📢 {weather_desc}",
+        f"💨 Ветер: {wind_speed} {UNITS[units]['speed']}",
+        f"💧 Влажность: {humidity}%",
+        f"🎯 {generate_recommendations(temp, weather_desc)}",
+        "\n⏳ Прогноз на оставшийся день:"
+    ]
+
+    # Добавляем почасовой прогноз (группируем по 3 часа)
+    for i, item in enumerate(today_data):
+        if i % 3 == 0:  # Показываем каждые 3 часа для компактности
+            time = datetime.fromtimestamp(item["dt"]).strftime("%H:%M")
+            temp = item["main"]["temp"]
+            weather_desc = item["weather"][0]["description"].capitalize()
+
+            message_parts.append(
+                f"\n🕒 {time}: {temp:.1f}{UNITS[units]['temp']}, {weather_desc}"
+            )
+
+    # Добавляем информацию о max/min температуре
+    all_day_data = [f for f in forecast_data if datetime.fromtimestamp(f["dt"]).date() == today]
+    if all_day_data:
+        max_temp = max(item["main"]["temp"] for item in all_day_data)
+        min_temp = min(item["main"]["temp"] for item in all_day_data)
+        message_parts.append(
+            f"\n\n📊 За день: макс. {max_temp:.1f}{UNITS[units]['temp']}, "
+            f"мин. {min_temp:.1f}{UNITS[units]['temp']}"
+        )
+
+    message_parts.append("\n\nХорошего дня! ☀️")
+
+    return "\n".join(message_parts)
+
+# Функция рассылки погоды
+async def send_daily_notifications():
+    while True:
+        now = datetime.now().strftime("%H:%M")
+        for user_id, sub_data in subscriptions.items():
+            if sub_data["time"] == now and sub_data["active"]:
+                forecast = await format_morning_forecast(user_id)
+                if forecast:
+                    try:
+                        await bot.send_message(user_id, forecast)
+                    except Exception as e:
+                        logging.error(f"Failed to send notification to {user_id}: {e}")
+        await asyncio.sleep(60)  # Проверяем каждую минуту
+
+
 # Обработчики сообщений
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
@@ -187,38 +325,129 @@ async def cmd_change_city(message: Message):
     await message.answer("Введите новый город:", reply_markup=types.ReplyKeyboardRemove())
 
 
+@dp.message(lambda message: message.text == "⏰ Рассылка погоды")
+async def cmd_subscription(message: Message):
+    user_id = message.from_user.id
+    if user_id not in user_data or "city" not in user_data[user_id]:
+        await message.answer("❌ Сначала укажите город")
+        return
+
+    if user_id not in subscriptions:
+        subscriptions[user_id] = {"active": False, "time": "08:00"}
+
+    status = "✅ Включена" if subscriptions[user_id]["active"] else "❌ Отключена"
+    await message.answer(
+        f"⏰ Ежедневная рассылка погоды:\n"
+        f"Статус: {status}\n"
+        f"Время: {subscriptions[user_id]['time']}",
+        reply_markup=subscription_menu()
+    )
+
+
+@dp.message(lambda message: message.text == "✅ Включить рассылку")
+async def enable_subscription(message: Message):
+    user_id = message.from_user.id
+    if user_id not in subscriptions:
+        subscriptions[user_id] = {"active": True, "time": "08:00"}
+    else:
+        subscriptions[user_id]["active"] = True
+
+    await message.answer(
+        f"✅ Рассылка включена. Вы будете получать погоду ежедневно в {subscriptions[user_id]['time']}",
+        reply_markup=subscription_menu()
+    )
+
+
+@dp.message(lambda message: message.text == "❌ Отключить рассылку")
+async def disable_subscription(message: Message):
+    user_id = message.from_user.id
+    if user_id in subscriptions:
+        subscriptions[user_id]["active"] = False
+
+    await message.answer(
+        "❌ Рассылка отключена",
+        reply_markup=subscription_menu()
+    )
+
+
+@dp.message(lambda message: message.text == "🕘 Изменить время")
+async def change_time(message: Message):
+    await message.answer("Выберите время рассылки:", reply_markup=time_menu())
+
+@dp.message(lambda message: message.text == "⏱ Указать точное время")
+async def ask_custom_time(message: Message):
+    await message.answer(
+        "⏰ Введите время в формате ЧЧ:ММ (например, 08:30 или 15:45):",
+        reply_markup=ReplyKeyboardRemove()
+    )
+
+
+@dp.message(lambda message: re.match(r'^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$', message.text))
+async def set_custom_time(message: Message):
+    user_id = message.from_user.id
+    time_str = message.text
+
+    # Проверяем корректность времени
+    try:
+        hours, minutes = map(int, time_str.split(':'))
+        if not (0 <= hours < 24 and 0 <= minutes < 60):
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ Некорректное время. Используйте формат ЧЧ:ММ (например, 08:30)")
+        return
+
+    if user_id not in subscriptions:
+        subscriptions[user_id] = {"active": True, "time": time_str}
+    else:
+        subscriptions[user_id]["time"] = time_str
+
+    await message.answer(
+        f"✅ Время рассылки установлено на {time_str}",
+        reply_markup=subscription_menu()
+    )
+
+@dp.message(lambda message: message.text in ["07:00", "08:00", "09:00", "10:00", "11:00", "12:00"])
+async def set_time(message: Message):
+    user_id = message.from_user.id
+    if user_id not in subscriptions:
+        subscriptions[user_id] = {"active": True, "time": message.text}
+    else:
+        subscriptions[user_id]["time"] = message.text
+
+    await message.answer(
+        f"✅ Время рассылки изменено на {message.text}",
+        reply_markup=subscription_menu()
+    )
+
+
 @dp.message(lambda message: message.text == "🌤️ Сейчас")
 async def cmd_current(message: Message):
     user_id = message.from_user.id
     if user_id not in user_data or "city" not in user_data[user_id]:
         return await message.answer("❌ Сначала укажите город")
 
-    async with aiohttp.ClientSession() as session:
-        params = {
-            "q": user_data[user_id]["city"],
-            "appid": OPENWEATHER_API_KEY,
-            "units": user_data[user_id].get("units", "metric"),
-            "lang": "ru"
-        }
-        async with session.get("http://api.openweathermap.org/data/2.5/weather", params=params) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                temp = data["main"]["temp"]
-                feels_like = data["main"]["feels_like"]
-                weather_desc = data["weather"][0]["description"].capitalize()
-                units = user_data[user_id].get("units", "metric")
+    weather_data = await get_current_weather(
+        city=user_data[user_id]["city"],
+        units=user_data[user_id].get("units", "metric")
+    )
 
-                response = (
-                    f"🌍 Погода в {user_data[user_id]['city'].title()} сейчас:\n"
-                    f"🌡️ {temp:.1f}{UNITS[units]['temp']} (ощущается {feels_like:.1f}{UNITS[units]['temp']})\n"
-                    f"📢 {weather_desc}\n"
-                    f"💨 Ветер: {data['wind']['speed']} {UNITS[units]['speed']}\n"
-                    f"💧 Влажность: {data['main']['humidity']}%\n"
-                    f"🎯 {generate_recommendations(temp, weather_desc)}"
-                )
-                await message.answer(response)
-            else:
-                await message.answer("⚠️ Ошибка получения данных")
+    if weather_data:
+        temp = weather_data["main"]["temp"]
+        feels_like = weather_data["main"]["feels_like"]
+        weather_desc = weather_data["weather"][0]["description"].capitalize()
+        units = user_data[user_id].get("units", "metric")
+
+        response = (
+            f"🌍 Погода в {user_data[user_id]['city'].title()} сейчас:\n"
+            f"🌡️ {temp:.1f}{UNITS[units]['temp']} (ощущается {feels_like:.1f}{UNITS[units]['temp']})\n"
+            f"📢 {weather_desc}\n"
+            f"💨 Ветер: {weather_data['wind']['speed']} {UNITS[units]['speed']}\n"
+            f"💧 Влажность: {weather_data['main']['humidity']}%\n"
+            f"🎯 {generate_recommendations(temp, weather_desc)}"
+        )
+        await message.answer(response)
+    else:
+        await message.answer("⚠️ Ошибка получения данных")
 
 
 @dp.message(lambda message: message.text == "🔄 Завтра")
@@ -283,6 +512,8 @@ async def handle_city(message: Message):
 
 
 async def main():
+    # Запускаем рассылку в фоновом режиме
+    asyncio.create_task(send_daily_notifications())
     await dp.start_polling(bot)
 
 

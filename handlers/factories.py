@@ -1,6 +1,15 @@
 # handlers/factories.py
+import logging
+import asyncio
+import re
+from aiogram.filters import Command
+from aiogram import Bot, Dispatcher
+from config import TOKEN
+from handlers import start, settings, weather, subscriptions, common
+from services import scheduler
 from services.storage import user_data, subscriptions
-
+from aiogram.types import Message
+from keyboards import settings_menu, subscription_menu
 
 def subscription_handlers():
     async def _cmd_subscription(message: Message):
