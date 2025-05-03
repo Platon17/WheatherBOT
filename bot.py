@@ -11,8 +11,8 @@ from typing import Dict, Any, List
 import re
 
 # Настройки
-API_TOKEN = config.TOKEN
-OPENWEATHER_API_KEY = config.WEATHER_API_KEY
+API_TOKEN = config.API_TOKEN
+OPENWEATHER_API_KEY = config.OPENWEATHER_API_KEY
 
 UNITS = {
     "metric": {"temp": "°C", "speed": "м/с"},
@@ -177,6 +177,11 @@ def format_tomorrow_forecast(forecast_data: list, city: str, units: str) -> str:
     if not daily_data:
         return "❌ Прогноз на завтра недоступен"
 
+    # Находим максимальную и минимальную температуру за день
+    max_temp = max(item["main"]["temp"] for item in daily_data)
+    min_temp = min(item["main"]["temp"] for item in daily_data)
+
+    # Берем дневной прогноз (в 12:00) или первый доступный
     day_forecast = next((f for f in daily_data
                          if datetime.fromtimestamp(f["dt"]).hour == 12), daily_data[0])
 
@@ -187,13 +192,14 @@ def format_tomorrow_forecast(forecast_data: list, city: str, units: str) -> str:
 
     return (
         f"📅 Прогноз на завтра ({date_str}) для {city.title()}:\n"
-        f"🌡️ {temp:.1f}{UNITS[units]['temp']} (ощущается {feels_like:.1f}{UNITS[units]['temp']})\n"
+        f"🌡️ Днем: {temp:.1f}{UNITS[units]['temp']} (ощущается {feels_like:.1f}{UNITS[units]['temp']})\n"
         f"📢 {weather_desc}\n"
+        f"🔥 Макс: {max_temp:.1f}{UNITS[units]['temp']}\n"
+        f"❄️ Мин: {min_temp:.1f}{UNITS[units]['temp']}\n"
         f"💨 Ветер: {day_forecast['wind']['speed']} {UNITS[units]['speed']}\n"
         f"💧 Влажность: {day_forecast['main']['humidity']}%\n"
         f"🎯 {generate_recommendations(temp, weather_desc)}"
     )
-
 
 # Форматирование утреннего прогноза для рассылки
 async def format_morning_forecast(user_id: int) -> str:
